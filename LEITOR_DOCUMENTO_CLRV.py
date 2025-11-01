@@ -1783,6 +1783,6 @@ class ProcessorThread(threading.Thread):
 #    ui = UI()
 #    ui.run()
 
-# pyinstaller --noconfirm --onefile --windowed --clean --name LEITOR_DOCUMENTO_CLRV --hidden-import=pdfplumber --hidden-import=extract_msg --hidden-import=openpyxl.styles.numbers "ui.py"  tony
+# pyinstaller --noconfirm --onefile --windowed --clean --name LEITOR_DOCUMENTO_CLRV --hidden-import=pdfplumber --hidden-import=extract_msg --hidden-import=openpyxl.styles.numbers "ui.py"
 
 #myenv\Scripts\Activate.ps1
