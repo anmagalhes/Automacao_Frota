@@ -72,9 +72,12 @@ CAMPOS_PADRAO = [
      "CENTRO_CUSTO",
      "EQUIPAMENTO",
      "TIPO_VEICULO",
-     "DIVISAO"
+     "DIVISAO",
+     "PERFIL_CARTALO",
+     "TIPO_CARURANTE_OLEO",
+     "TIPO_ANO_VEICULO",
+     "GERENCIA"
 ]
-
 
 def coalesce_por_veiculo(rows):
     """
@@ -1447,6 +1450,13 @@ def extrair_campos_crlv(texto: str):
             dados["Ano Fabricação"] = dados.get("Ano Fabricação") or m.group(1)
             dados["Ano Modelo"]     = dados.get("Ano Modelo")     or m.group(2)
 
+
+    # TIOPM_ANO_VEICULO = Ano Modelo / Ano Fabricação
+    ano_mod = dados.get("Ano Modelo")
+    ano_fab = dados.get("Ano Fabricação")
+    if ano_mod and ano_fab:
+        dados["TIPO_ANO_VEICULO"] = f"{ano_mod}/{ano_fab}"
+
     # (SE) LOCAL/UF/DATA — formatos 1 (mesma linha) e 2 (labels em coluna)
     if not (dados.get("Local") and dados.get("UF") and dados.get("Data Emissão")):
         m = re.search(r"\bLOCAL\b\s*\bDATA\b.*?([A-ZÀ-Ü ]+?)\s+([A-Z]{2})\s+(\d{2}/\d{2}/\d{4})",
@@ -1839,6 +1849,7 @@ class ProcessorThread(threading.Thread):
 
                 # 2) Transforma para o layout exato da planilha (cabeçalho linha 4)
                 from transform_frota import build_frota_df
+
                 # (Opcional) defaults SAP / fixos:
                 defaults = {
                     "EQTYP": "V",

@@ -139,8 +139,10 @@ def build_frota_df(
     out["CHASSIS_NUM"]  = _col(df_in, "Chassi")
     out["FUEL_PRI"]  = _col(df_in, "Combustivel_Principal")
     out["FUEL_SEC"]  = _col(df_in, "Combustivel_Secundario")
-    out["MWERT1"]  = _col(df_in, "Combustivel_Secundario")
+
+    out["MWERT1"]  = _col(df_in, "TIPO_ANO_VEICULO")   # ANO MODELO / ANO FABRICACAO
     out["MWERT5"]  = _col(df_in, "Local")
+
     out["MWERT6"]  = _col(df_in, "UF")
     out["MWERT11"]  = _col(df_in, "Número do CRV")
     out["MWERT15"]  = _col(df_in, "CNPJ")
@@ -149,6 +151,12 @@ def build_frota_df(
     out["ENGINE_SNR"]   = _col(df_in, "Motor")
     out["MWERT3"]        = _col(df_in, "Cor")
     out["MWERT12"]        = _col(df_in, "NumeroSegurancaCRV")
+    out["RBNR"]        = _col(df_in, "PERFIL_CARTALOGO")
+    out["OIL_TYPE"]        = _col(df_in, "TIPO_CARURANTE_OLEO")
+    out["INVNR"]        = _col(df_in, "GERENCIA")
+
+
+
 
     out["EXPIRY_DATE"]  = _col(df_in, "Data Emissão").apply(to_date_dmy)
 
@@ -157,6 +165,7 @@ def build_frota_df(
     # CENTRO -> SWERK / IWERK (planta / centro manutenção)
     out["SWERK"] = _col(df_in, "CENTRO")
     out["IWERK"] = _col(df_in, "CENTRO")
+    out["WERGW"] = _col(df_in, "CENTRO")
 
     # Opcional: manter também em RBNR (se o seu layout/integração utilizar)
     out["RBNR"]  = _col(df_in, "CENTRO")

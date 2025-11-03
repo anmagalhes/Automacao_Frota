@@ -11,6 +11,49 @@ from tkinter.scrolledtext import ScrolledText
 # Thread do pipeline (módulo separado)
 from processor_thread import ProcessorThread
 
+
+import unicodedata, re
+from typing import Optional, Dict, Any
+
+def _norm_token(s: str) -> str:
+    """Remove acentos, espaços/hífens/underscores e deixa MAIÚSCULAS."""
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFD", str(s))
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+    s = re.sub(r"[\s\-\_/]+", "", s).upper()
+    return s
+
+def map_perfil_por_equipamento(equip: str) -> Optional[str]:
+    s = _norm_token(equip)
+    if not s: return None
+    pre = s[:3]
+    mapa = {
+        "CAM": "CAMINHAO",
+        "MOT": "MOTO",
+        "VLE": "CARRO",          # troque para "VEICULO LEVE" se preferir
+        "SER": "SEMI-REBOQUE",
+        "SRE": "SEMI-REBOQUE",
+        "ONI": "ÔNIBUS",
+    }
+    return mapa.get(pre)
+
+def map_combustivel_por_equipamento(equip: str) -> Optional[str]:
+    s = _norm_token(equip)
+    if not s: return None
+    pre = s[:3]
+    if pre in ("VLE", "MOT"):
+        return "GASOLINA"
+    if pre in ("CAM", "SER", "SRE", "ONI"):
+        return "OLEO M.DIESE"
+    return None
+
+def map_tipo_oleo_sugerido(equip: str) -> Optional[str]:
+    fam = map_combustivel_por_equipamento(equip)
+    if fam == "GASOLINA":    return "SAE 5W30"
+    if fam == "OLEO DIESEL": return "SAE 15W40"
+    return None
+
 from LEITOR_DOCUMENTO_CLRV import (
     APP_TITULO,
     OCR_SPACE_APIKEY_DEFAULT,
@@ -410,6 +453,7 @@ class UI:
     # Coleta dos extras (mantém existentes + inclui novos)
     def _coletar_campos_extras(self):
         return {
+ # 1) Lê os campos já existentes (sem alterar)
             "CENTRO": (self.in_centro.get() or "").strip() or None,
             "CENTRO_CUSTO": (self.in_ccusto.get() or "").strip() or None,
             "EQUIPAMENTO": (self.in_equip.get() or "").strip() or None,
@@ -450,12 +494,36 @@ class UI:
                 self.msg(f"ℹ Nenhum caminho escolhido. Será salvo automaticamente em: {self.saida_excel_path}")
 
             # 4) Coleta dos extras
-            extras = {}
             try:
                 extras = self._coletar_campos_extras() or {}
             except Exception as e:
                 self.msg(f"[WARN] Falha ao coletar campos extras: {e}")
                 extras = {}
+
+            # >>> PARAMETRIZAÇÃO AQUI (pós-coleta, SEM tocar na função validada)
+            try:
+                equip = extras.get("EQUIPAMENTO")
+                if equip:
+                    # PERFIL_CARTALOGO (só preenche se ausente/vazio)
+                    if not extras.get("PERFIL_CARTALOGO") or str(extras["PERFIL_CARTALOGO"]).strip() == "":
+                        c = map_perfil_por_equipamento(equip)
+                        if c:
+                            extras["PERFIL_CARTALOGO"] = c
+
+
+        # *** COMBUSTÍVEL/ÓLEO: usa a CHAVE EXATA pedida ***
+                if not extras.get("TIPO_CARURANTE_OLEO") or str(extras["TIPO_CARURANTE_OLEO"]).strip() == "":
+                    c = map_combustivel_por_equipamento(equip)
+                    if c:
+                        extras["TIPO_CARURANTE_OLEO"] = c
+
+                # Log de auditoria (opcional)
+                self.msg(
+                    f"[REGRAS] EQUIP={equip or 'None'} | PERFIL={extras.get('PERFIL_CARTALOGO')} "
+                    f"| COMB={extras.get('TIPO_CARURANTE_OLEO')}"
+                )
+            except Exception as e:
+                self.msg(f"[WARN] Falha ao parametrizar extras: {e}")
 
             # 5) Preparação da UI
             if self.var_show_log.get():
@@ -463,25 +531,25 @@ class UI:
                     self.log_text.delete("1.0", tk.END)
                 except Exception:
                     pass
+
             self.progress["value"] = 0
             self.progress_label.config(text="Iniciando…")
             self.btn_run.config(state=tk.DISABLED)
             self.btn_sel.config(state=tk.DISABLED)
             self.btn_cancel.config(state=tk.NORMAL)
 
-            # 6) Inicia a thread
+            # 6) Inicia a thread (leva os extras prontos)
             self.worker = ProcessorThread(
-                    self.pasta,
-                    apikey,
-                    self,
-                    saida_excel_path=self.saida_excel_path,
-                    extra_campos=extras,
-                    on_msg=self.msg,
-                    on_progress=self.progresso,
-                    on_done=self.done,
-                    dispatcher=lambda delay, fn: self.root.after(delay, fn),
-                )
-
+                self.pasta,
+                apikey,
+                self,
+                saida_excel_path=self.saida_excel_path,
+                extra_campos=extras,
+                on_msg=self.msg,
+                on_progress=self.progresso,
+                on_done=self.done,
+                dispatcher=lambda delay, fn: self.root.after(delay, fn),
+            )
             self.worker.start()
 
         except Exception as e:
