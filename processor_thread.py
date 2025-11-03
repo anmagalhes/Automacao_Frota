@@ -17,6 +17,162 @@ def _default_normalizar_texto_basico(txt: str | None) -> str:
     return " ".join(txt.replace("\r", " ").replace("\n", " ").split())
 
 
+# =====================================================================
+# NOVO: extração com prioridade por página/bloco (Folheto vs CRLV-e)
+# =====================================================================
+import re
+
+def extrair_campos_crlv_com_prioridade(self, texto: str, campos_padrao: dict | None = None) -> dict:
+    """
+    1) Extrai com o pipeline atual (self.extrair_campos_crlv).
+    2) Identifica blocos do 'folheto SENATRAN' e do 'CRLV-e' no texto.
+    3) Aplica prioridade por bloco:
+       - Folheto: NumeroSegurancaCRV + cabeçalho RENAVAM/PLACA/ANOS
+       - CRLV-e: Numero do CRV (12-15), Categoria, Espécie/Tipo, Local/UF/Data etc.
+    4) Faz saneamentos (Capacidade anti-RENAVAM, TIPO_ANO_VEICULO, anti-colisão 11 dígitos).
+    """
+    # ---------------- Base do seu pipeline ----------------
+    base_padrao = (campos_padrao.copy() if campos_padrao else self.campos_padrao.copy())
+    dados = self.extrair_campos_crlv(texto, base_padrao)  # usa sua função já existente
+
+    # ---------------- Detecta blocos ----------------
+    # Bloco CRLV-e (título oficial)
+    m_crlve = re.search(
+        r"CERTIFICADO\s+DE\s+REGISTRO\s+E\s+LICENCIAMENTO\s+DE\s+VE[ÍI]CULO\s*-\s*DIGITAL",
+        texto, re.IGNORECASE
+    )
+    bloco_crlve = texto[m_crlve.start():] if m_crlve else None
+
+    # Bloco Folheto (rótulo 'NÚMERO DE SEGURANÇA DO CRV')
+    m_folheto = re.search(r"N[ÚU]MERO\s*DE\s*SEGURAN[ÇC]A\s*DO\s*CRV", texto, re.IGNORECASE)
+    if m_folheto:
+        ini = max(0, m_folheto.start() - 400)
+        fim = min(len(texto), m_folheto.end() + 1200)
+        bloco_folheto = texto[ini:fim]
+    else:
+        bloco_folheto = None
+
+    RE_11 = re.compile(r"(?<!\d)(\d{11})(?!\d)")
+    RE_12_15 = re.compile(r"(?<!\d)(\d{12,15})(?!\d)")
+
+    # ---------------- Nº Segurança do CRV (preferir Folheto) ----------------
+    def _num_seguranca_crv(txt: str) -> str | None:
+        mrot = re.search(r"N[ÚU]MERO\s*DE\s*SEGURAN[ÇC]A\s*DO\s*CRV", txt, re.IGNORECASE)
+        if not mrot:
+            return None
+        win = txt[mrot.end(): mrot.end()+200]
+        m11 = RE_11.search(win)
+        return m11.group(1) if m11 else None
+
+    if bloco_folheto:
+        numseg = _num_seguranca_crv(bloco_folheto)
+        if numseg:
+            dados["NumeroSegurancaCRV"] = numseg
+    if not dados.get("NumeroSegurancaCRV"):
+        numseg = _num_seguranca_crv(texto)
+        if numseg:
+            dados["NumeroSegurancaCRV"] = numseg
+
+    # ---------------- Nº do CRV (12–15; preferir CRLV-e) ----------------
+    def _num_crv(txt: str) -> str | None:
+        """
+        Encontra 'NÚMERO DO CRV' ignorando o caso em que vem '... SEGURANÇA DO CRV'.
+        Estratégia: localizar o rótulo e varrer uma janela à frente por 12–15 dígitos.
+        """
+        for m in re.finditer(r"N[ÚU]MERO\s+DO\s+CRV", txt, flags=re.IGNORECASE):
+            ini = m.start()
+            # Se ~40 caracteres antes houver 'SEGURAN' e 'DO CRV', é o rótulo do folheto → ignore
+            prev = txt[max(0, ini - 40):ini].upper()
+            if "SEGURAN" in prev and "DO CRV" in prev:
+                continue
+            # Janela à frente para capturar o número do CRV (12–15 dígitos)
+            win = txt[m.end(): m.end() + 220]
+            mnum = re.search(r"(?<!\d)(\d{12,15})(?!\d)", win)
+            if mnum:
+                return mnum.group(1)
+        return None
+
+    if bloco_crlve:
+        crv = _num_crv(bloco_crlve)
+        if crv:
+            dados["Número do CRV"] = crv
+    if not dados.get("Número do CRV"):
+        crv = _num_crv(texto)
+        if crv:
+            dados["Número do CRV"] = crv
+
+   # ---------------- Cabeçalho Folheto: Renavam/Placa/AnoFab/AnoMod ----------------
+    def _header_folheto(txt: str) -> dict:
+        # normaliza espaços para este match (suporta com/sem quebras de linha)
+        tflat = re.sub(r"\s+", " ", txt).strip()
+        m = re.search(
+
+            r"(?:C[ÓO]DIGO\s+)?RENAVAM\s+PLACA\s+ANO\s+FABRICA[ÇC][ÃA]O\s+ANO\s+MODELO\s+"
+            r"([0-9\. ]+)\s+([A-Z0-9]{7})\s+([12]\d{3})\s+([12]\d{3})",
+            tflat, re.IGNORECASE
+        )
+        if not m:
+            return {}
+        return {
+            "Renavam": (m.group(1) or "").strip(),
+            "Placa":   (m.group(2) or "").strip().upper(),
+            "Ano Fabricação": (m.group(3) or "").strip(),
+            "Ano Modelo":     (m.group(4) or "").strip(),
+        }
+
+    if bloco_folheto:
+        hdr = _header_folheto(bloco_folheto)
+        for k in ("Renavam", "Placa", "Ano Fabricação", "Ano Modelo"):
+            if hdr.get(k):
+                dados[k] = hdr[k]
+
+    # ---------------- CRLV-e: Local/UF/Data, Categoria, Espécie/Tipo ----------------
+    if bloco_crlve:
+        # Local / UF / Data
+        m = re.search(
+            r"\bLOCAL\b[^\n]*?\b([A-ZÀ-Ü ]+)\s+([A-Z]{2})\s+(\d{2}/\d{2}/\d{4})",
+            bloco_crlve, re.IGNORECASE
+        )
+        if m:
+            dados["Local"] = (m.group(1) or "").strip()
+            dados["UF"] = (m.group(2) or "").upper()
+            dados["Data Emissão"] = (m.group(3) or "").strip()
+
+        # Categoria (valor real do CRLV-e, ignora ruídos tipo 'CAT'/'***')
+        m = re.search(r"\bCATEGORIA\b\s*[:\s]*([A-ZÀ-Ü ]+)", bloco_crlve, re.IGNORECASE)
+        if m:
+            cat = re.sub(r"\s+", " ", (m.group(1) or "").upper()).strip()
+            if cat not in {"CAT", "***"}:
+                dados["Categoria"] = cat
+
+        # Espécie / Tipo
+        m = re.search(r"ESP[ÉE]CIE\s*/\s*TIPO\s*[:\s]*([A-ZÀ-Ü ]+)", bloco_crlve, re.IGNORECASE)
+        if m:
+            esp = re.sub(r"\s+", " ", (m.group(1) or "").upper()).strip()
+            if esp not in {"CAT", "***"}:
+                dados["Espécie / Tipo"] = esp
+
+    # ---------------- Anti-“Capacidade RENAVAM” (saneamento) ----------------
+    cap = dados.get("Capacidade")
+    if cap is not None and str(cap).strip():
+        s = str(cap).upper().strip()
+        dig = re.sub(r"\D", "", s)
+        ren = re.sub(r"\D", "", str(dados.get("Renavam") or ""))
+        # limpa se for igual ao RENAVAM, ou 11 dígitos, ou número longo sem unidade plausível
+        if (dig == ren) or (len(dig) == 11) or (len(dig) >= 8 and not re.search(r"\b(KG|T|TON|L|P)\b", s)):
+            dados["Capacidade"] = None
+
+    # ---------------- Derivado: TIPO_ANO_VEICULO ----------------
+    ano_fab = dados.get("Ano Fabricação")
+    ano_mod = dados.get("Ano Modelo")
+    if ano_fab and ano_mod:
+        dados["TIPO_ANO_VEICULO"] = f"{ano_mod}/{ano_fab}"
+
+    # Segurança extra: Número do CRV NÃO pode ter 11 dígitos (é Nº de Segurança)
+    if dados.get("Número do CRV") and len(re.sub(r"\D", "", str(dados["Número do CRV"]))) == 11:
+        dados["Número do CRV"] = None
+
+    return dados
 class ProcessorThread(threading.Thread):
     """
     Classe UNIFICADA: aceita tanto a assinatura LEGADA quanto a NOVA.
@@ -228,6 +384,7 @@ class ProcessorThread(threading.Thread):
 
                 caminho_pdf = os.path.join(self.pasta, nome_arquivo)
                 try:
+
                     # 1) OCR/extração bruta e normalização
                     texto = self.extrair_texto_pdf(caminho_pdf, self.apikey)
                     texto_norm = self.normalizar_texto_basico(texto)
@@ -253,7 +410,8 @@ class ProcessorThread(threading.Thread):
                             self._clog(f"[⚠] Falha ao salvar .ocr.txt: {e}")
 
                     # 2) Extração dos campos (usa wrapper no modo legado)
-                    dados = self.extrair_campos_crlv(texto_norm, self.campos_padrao.copy())
+                    dados = self.extrair_campos_crlv_com_prioridade(texto, self.campos_padrao.copy())
+
                     dados["Arquivo"] = nome_arquivo
                     if self.salvar_texto_bruto_no_excel:
                         dados["_TextoBruto"] = texto or ""

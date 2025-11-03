@@ -79,48 +79,6 @@ CAMPOS_PADRAO = [
      "GERENCIA"
 ]
 
-def _num_crv_window(txt: str) -> str | None:
-    """
-    Encontra 'NÚMERO DO CRV' ignorando o caso em que vem '... SEGURANÇA DO CRV'.
-    Estratégia: localizar o rótulo e varrer uma janela à frente por 12–15 dígitos.
-    Funciona mesmo se o texto já estiver “achatado” (sem \n).
-    """
-    # percorre todas as ocorrências do rótulo
-    for m in re.finditer(r"N[ÚU]MERO\s+DO\s+CRV", txt, flags=re.IGNORECASE):
-        ini = m.start()
-        # Se ~40 chars antes houver 'SEGURAN' e 'DO CRV', é o rótulo do folheto → ignore
-        prev = txt[max(0, ini-40):ini].upper()
-        if "SEGURAN" in prev and "DO CRV" in prev:
-            continue
-        # Janela à frente (tolerante a espaços/linhas)
-        win = txt[m.end(): m.end()+220]
-        mnum = re.search(r"(?<!\d)(\d{12,15})(?!\d)", win)
-        if mnum:
-            return mnum.group(1)
-    return None
-
-
-def _header_folheto_flat(txt: str) -> dict:
-    """
-    Cabeçalho do folheto em linha:
-    CÓDIGO RENAVAM PLACA ANO FABRICAÇÃO ANO MODELO
-    + valores na linha de baixo (com/sem \n após normalização).
-    """
-    tflat = re.sub(r"\s+", " ", txt).strip()
-    m = re.search(
-        r"(?:C[ÓO]DIGO\s+)?RENAVAM\s+PLACA\s+ANO\s+FABRICA[ÇC][ÃA]O\s+ANO\s+MODELO\s+"
-        r"([0-9\. ]+)\s+([A-Z0-9]{7})\s+([12]\d{3})\s+([12]\d{3})",
-        tflat, re.IGNORECASE
-    )
-    if not m:
-        return {}
-    return {
-        "Renavam": (m.group(1) or "").strip(),
-        "Placa":   (m.group(2) or "").strip().upper(),
-        "Ano Fabricação": (m.group(3) or "").strip(),
-        "Ano Modelo":     (m.group(4) or "").strip(),
-    }
-
 def coalesce_por_veiculo(rows):
     """
     Une registros do mesmo veículo.
@@ -797,92 +755,6 @@ def _upper_sem_acento(s: str) -> str:
     up = unicodedata.normalize("NFD", s.upper())
     return "".join(ch for ch in up if unicodedata.category(ch) != "Mn")
 
-
-# =====================================================================
-# PRIORIDADE DINÂMICA POR PÁGINA (via blocos do texto)
-# Detecta "Folheto SENATRAN" x "CRLV-e" e aplica prioridade de campos
-# =====================================================================
-import re
-
-def _find_bloco_crlve(texto: str) -> str | None:
-    """Extrai o bloco do CRLV-e a partir do título oficial do documento (independente da ordem das páginas)."""
-    m = re.search(
-        r"CERTIFICADO\s+DE\s+REGISTRO\s+E\s+LICENCIAMENTO\s+DE\s+VE[ÍI]CULO\s*-\s*DIGITAL",
-        texto, re.IGNORECASE
-    )
-    return texto[m.start():] if m else None
-
-def _find_bloco_folheto(texto: str) -> str | None:
-    """Extrai um bloco iniciando perto de 'NÚMERO DE SEGURANÇA DO CRV' (folheto SENATRAN)."""
-    m = re.search(r"N[ÚU]MERO\s*DE\s*SEGURAN[ÇC]A\s*DO\s*CRV", texto, re.IGNORECASE)
-    if not m:
-        return None
-    start = max(0, m.start() - 400)   # pequena janela antes
-    end   = min(len(texto), m.end() + 1200)
-    return texto[start:end]
-
-# --- Números com segurança de tamanho ---
-_RE_11 = re.compile(r"(?<!\d)(\d{11})(?!\d)")
-_RE_12_15 = re.compile(r"(?<!\d)(\d{12,15})(?!\d)")
-
-def _extrair_num_seg_crv(texto: str) -> str | None:
-    """Número de Segurança do CRV = exatamente 11 dígitos após o rótulo."""
-    mrot = re.search(r"N[ÚU]MERO\s*DE\s*SEGURAN[ÇC]A\s*DO\s*CRV", texto, re.IGNORECASE)
-    if not mrot:
-        return None
-    janela = texto[mrot.end(): mrot.end()+200]
-    m11 = _RE_11.search(janela)
-    return m11.group(1) if m11 else None
-
-def _extrair_num_crv(texto: str) -> str | None:
-    """
-    'NÚMERO DO CRV' (12-15 dígitos) com proteção para não confundir com
-    'NÚMERO DE SEGURANÇA DO CRV'.
-    """
-    m = re.search(
-        r"(?<!SEGURAN[ÇC]A\s+DO\s)N[ÚU]MERO\s+DO\s+CRV\s*[:\-\s]*([0-9][0-9\s\.\-]{8,30})",
-        texto, re.IGNORECASE
-    )
-    if not m:
-        return None
-    dig = re.sub(r"\D", "", m.group(1))
-    if 12 <= len(dig) <= 15:   # 12 é o mais comum no CRLV-e
-        return dig
-    return None   # rejeita 11 dígitos (é Nº de Segurança)
-
-def _extrair_header_folheto(texto: str) -> dict:
-    """
-    Tenta pegar RENAVAM / PLACA / ANO FAB / ANO MOD no cabeçalho do folheto.
-    """
-    m = re.search(
-        r"(?:C[ÓO]DIGO\s+)?RENAVAM\s+PLACA\s+ANO\s+FABRICA[ÇC][ÃA]O\s+ANO\s+MODELO.*?\n"
-        r"([0-9\.\s]+)\s+([A-Z0-9]{7})\s+([12]\d{3})\s+([12]\d{3})",
-        texto, re.IGNORECASE
-    )
-    if not m:
-        return {}
-    return {
-        "Renavam": limpar_valor(m.group(1)),
-        "Placa": m.group(2).upper(),
-        "Ano Fabricação": m.group(3),
-        "Ano Modelo": m.group(4),
-    }
-
-def _limpa_capacidade_ruim(dados: dict) -> None:
-    """
-    Anti-RENAVAM na Capacidade (pós-processamento): se for 11 dígitos, igual ao RENAVAM
-    ou número longo sem unidade, limpa.
-    """
-    cap = dados.get("Capacidade")
-    if not cap:
-        return
-    txt = str(cap).upper().strip()
-    dig = re.sub(r"\D", "", txt)
-    ren = re.sub(r"\D", "", str(dados.get("Renavam") or ""))
-    if dig and (dig == ren or len(dig) == 11 or (len(dig) >= 8 and not re.search(r"\b(KG|T|TON|L|P)\b", txt))):
-        dados["Capacidade"] = None
-
-
 def split_combustivel(valor: str):
     """
     Recebe string de combustível (ex.: 'ALCOOL/GASOLINA', 'GASOLINA C', 'DIESEL S10', 'FLEX').
@@ -1140,108 +1012,30 @@ def pegar_valor_depois_de_label(linhas, label_regex, max_lookahead=4, filtro_val
 
 
 def extrair_campos_crlv_regex(texto: str):
-    """
-    Extração rápida só por regex (sem lookahead por linhas).
-    Ajustes aplicados:
-      - NÚMERO DO CRV: evita confundir com "NÚMERO DE SEGURANÇA DO CRV" (11 dígitos).
-      - ANO FAB/ANO MODELO: tenta primeiro a linha combinada; depois, unitários.
-      - CATEGORIA / ESPÉCIE-TIPO: sanitização básica e rejeição de ruídos comuns (CAT, ***).
-    """
+
     t = normalizar_texto_basico(texto)
     campos = {}
 
-    # --- RENAVAM (como você já tinha) ---
     campos["Renavam"] = _buscar_primeiro(t, [
         r"(?:C[ÓO]DIGO\s*)?RENAVAM[:\s]*([\d\.]{9,14})",
         r"RENAVAM\s*\n\s*([\d\.]{9,14})",
     ])
-
-    # --- NÚMERO DO CRV (evitar confundir com "SEGURANÇA DO CRV") ---
-    # 1) Tenta padrão explícito "NÚMERO DO CRV", mas com negative lookbehind p/ "SEGURANÇA DO "
-    #    e força dígitos (10–15). Rejeita exatamente 11 (formato típico do "Número de Segurança").
-    m = re.search(
-        r"(?<!SEGURAN[ÇC]A\s+DO\s)N[ÚU]MERO\s+DO\s+CRV\s*[:\-\s]*([0-9][0-9\s\.\-]{8,20})",
-        t, re.IGNORECASE
-    )
-    numero_crv = None
-    if m:
-        crv_digits = re.sub(r"\D", "", m.group(1))
-        if 10 <= len(crv_digits) <= 15 and len(crv_digits) != 11:
-            numero_crv = crv_digits
-
-    # 2) Se ainda não achou, tenta seu padrão antigo "CRV ...", mas sanitizando para dígitos
-    if not numero_crv:
-        m = re.search(
-            r"\bCRV\b\s*[:\-\s]*([0-9][0-9\s\.\-]{8,20})",
-            t, re.IGNORECASE
-        )
-        if m:
-            crv_digits = re.sub(r"\D", "", m.group(1))
-            if 10 <= len(crv_digits) <= 15 and len(crv_digits) != 11:
-                numero_crv = crv_digits
-
-    campos["Número do CRV"] = numero_crv
-
-    # --- ANO FABRICAÇÃO / ANO MODELO ---
-    # 0) Primeiro tenta a linha combinada "ANO FABRICAÇÃO  ANO MODELO  2021  2022"
-    m = re.search(
-        r"ANO\s*FABRICA[ÇC][ÃA]O\s+ANO\s*MODELO\s+([12]\d{3})\s+([12]\d{3})",
-        t, re.IGNORECASE
-    )
-    ano_fab, ano_mod = None, None
-    if m:
-        ano_fab, ano_mod = m.group(1), m.group(2)
-
-    # 1) Se algum ficou vazio, tenta os unitários (suas regex originais)
-    if not ano_fab:
-        ano_fab = _buscar_primeiro(t, [
-            r"ANO\s*(?:DE\s*)?FABRICA[ÇC][ÃA]O\s*[:\s]*([12]\d{3})",
-        ])
-    if not ano_mod:
-        ano_mod = _buscar_primeiro(t, [
-            r"ANO\s*MODELO\s*[:\s]*([12]\d{3})",
-        ])
-
-    campos["Ano Fabricação"] = ano_fab
-    campos["Ano Modelo"] = ano_mod
-
-    # --- CATEGORIA ---
-    categoria = _buscar_primeiro(t, [
+    campos["Número do CRV"] = _buscar_primeiro(t, [
+        r"(?:N[ÚU]MERO\s+DO\s+CRV|CRV)\s*[:\s]*([A-Z0-9\-]{6,})",
+    ])
+    campos["Ano Fabricação"] = _buscar_primeiro(t, [
+        r"ANO\s*(?:DE\s*)?FABRICA[ÇC][ÃA]O\s*[:\s]*([12]\d{3})",
+    ])
+    campos["Ano Modelo"] = _buscar_primeiro(t, [
+        r"ANO\s*MODELO\s*[:\s]*([12]\d{3})",
+    ])
+    campos["Categoria"] = _buscar_primeiro(t, [
         r"\bCATEGORIA\b\s*[:\s]*([A-ZÀ-Ü ]+)",
     ])
-    if categoria:
-        cat_clean = re.sub(r"\s+", " ", categoria.upper()).strip()
-        # Normaliza termos comuns e remove ruídos
-        mapa = {
-            "PARTICULAR": "PARTICULAR",
-            "ALUGUEL": "ALUGUEL",
-            "OFICIAL": "OFICIAL",
-            "COLECAO": "COLEÇÃO", "COLEÇÃO": "COLEÇÃO",
-            "DIPLOMATICO": "DIPLOMÁTICO", "DIPLOMÁTICO": "DIPLOMÁTICO"
-        }
-        # ruídos frequentes no OCR
-        if cat_clean in {"CAT", "***"}:
-            cat_clean = None
-        else:
-            cat_clean = mapa.get(cat_clean, cat_clean)
-        campos["Categoria"] = cat_clean
-    else:
-        campos["Categoria"] = None
-
-    # --- ESPÉCIE / TIPO ---
-    especie = _buscar_primeiro(t, [
+    campos["Espécie / Tipo"] = _buscar_primeiro(t, [
         r"ESP[ÉE]CIE\s*/\s*TIPO\s*[:\s]*([A-ZÀ-Ü ]+)",
     ])
-    if especie:
-        esp_clean = re.sub(r"\s+", " ", especie.upper()).strip()
-        if esp_clean in {"CAT", "***"}:
-            esp_clean = None
-        campos["Espécie / Tipo"] = esp_clean
-    else:
-        campos["Espécie / Tipo"] = None
-
     return campos
-
 
 def _buscar_primeiro(texto_norm: str, padroes):
     for padrao in padroes:
@@ -1356,8 +1150,7 @@ def extrair_campos_crlv(texto: str):
 
     # === (1) Regex estáveis ===
     m = re.search(r"(?:C[ÓO]DIGO\s*)?RENAVAM[:\s]*([\d\.]{9,14})", t_norm, re.IGNORECASE);  dados["Renavam"] = limpar_valor(m.group(1)) if m else None
-    crv_win = _num_crv_window(t_norm)
-    dados["Número do CRV"] = crv_win if crv_win else None
+    m = re.search(r"(?:N[ÚU]MERO\s+DO\s+CRV|CRV)\s*[:\s]*([A-Z0-9\-]{6,})", t_norm, re.IGNORECASE);  dados["Número do CRV"] = limpar_valor(m.group(1)) if m else None
     m = re.search(r"ANO\s*(?:DE\s*)?FABRICA[ÇC][ÃA]O\s*[:\s]*([12]\d{3})", t_norm, re.IGNORECASE);  dados["Ano Fabricação"] = limpar_valor(m.group(1)) if m else None
     m = re.search(r"ANO\s*MODELO\s*[:\s]*([12]\d{3})", t_norm, re.IGNORECASE);                     dados["Ano Modelo"] = limpar_valor(m.group(1)) if m else None
     m = re.search(r"\bCATEGORIA\b\s*[:\s]*([A-ZÀ-Ü ]+)", t_norm);                                   dados["Categoria"] = limpar_valor(m.group(1)) if m else None
