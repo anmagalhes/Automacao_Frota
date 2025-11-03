@@ -67,13 +67,63 @@ CAMPOS_PADRAO = [
     "Data Emissão",
     "Número do CRV",
     "Código Segurança CLA",
-   #"NumeroSegurancaCRV",
+     "NumeroSegurancaCRV",
      "CENTRO",
      "CENTRO_CUSTO",
      "EQUIPAMENTO",
      "TIPO_VEICULO",
      "DIVISAO"
 ]
+
+
+def coalesce_por_veiculo(rows):
+    """
+    Une registros do mesmo veículo.
+    Ordem de prioridade da chave: Renavam -> Placa -> Número do CRV -> NumeroSegurancaCRV.
+    Normaliza valores para evitar duplicidade por formatação.
+    Preenche somente campos vazios na linha base.
+    """
+
+    def _num(v):  # só dígitos
+        return re.sub(r"\D", "", str(v)) if v is not None else ""
+
+    def _placa(v):  # UPPER, sem hífen/espaços
+        if v is None: return ""
+        return str(v).upper().replace("-", "").replace(" ", "").strip()
+
+    def chave(rec):
+        cand = [
+            ("Renavam", _num(rec.get("Renavam"))),
+            ("Placa", _placa(rec.get("Placa"))),
+            ("Número do CRV", _num(rec.get("Número do CRV"))),
+            ("NumeroSegurancaCRV", _num(rec.get("NumeroSegurancaCRV"))),
+        ]
+        for k, v in cand:
+            if v:
+                return (k, v)
+        return ("__Arquivo__", (rec.get("Arquivo") or "").strip())
+
+    merged, fontes = {}, {}
+
+    for rec in rows:
+        k = chave(rec)
+        if k not in merged:
+            merged[k] = rec.copy()
+            fontes[k] = [rec.get("Arquivo")]
+        else:
+            base = merged[k]
+            for col, val in rec.items():
+                if (not base.get(col)) and (val is not None) and str(val).strip():
+                    base[col] = val
+            fontes[k].append(rec.get("Arquivo"))
+
+    out = list(merged.values())
+    for row in out:
+        k = chave(row)
+        row["_MergeFontes"] = "; ".join([x for x in (fontes.get(k) or []) if x])
+    return out
+
+
 
 def formatar_codigo(texto: str) -> str:
     """
@@ -294,7 +344,6 @@ def _corrigir_confusoes_ocr_num(s: str) -> str:
     }
     return "".join(mapa.get(ch, ch) for ch in s)
 
-import re
 
 def extrair_num_seguranca_crv(texto: str) -> str | None:
     """
@@ -321,6 +370,60 @@ def extrair_num_seguranca_crv(texto: str) -> str | None:
         return m2.group(0)
 
     return None
+
+
+def extrair_num_seguranca_crv(texto: str, renavam: str = None):
+    """
+    Extrai o 'Número de Segurança do CRV' (11 dígitos).
+    Regras:
+      1) Busca ancorada no rótulo 'NÚMERO DE SEGURANÇA DO CRV' (variações + acentos).
+      2) Tolerante a quebras de linha, 'CAT', ':', '-'.
+      3) Corrige confusões de OCR (O->0, I/l->1, B->8).
+      4) Janela curta após o rótulo (evita capturar RENAVAM ao longe).
+      5) Se o valor for IGUAL ao RENAVAM, rejeita (anti-falso-positivo).
+    """
+    if not texto:
+        return None
+
+    # --- regex do rótulo (tolerante a variações/acentos) ---
+    rotulo = r"""
+        N[ÚU]MERO\W*DE\W*SEGURAN[ÇC]A\W*(?:DO\W*)?CRV
+        [\s:\-]*
+        (?:CAT\b)?
+        [\s\r\n]*
+    """
+
+    def _fix_ocr(s: str) -> str:
+        mapa = {"O": "0", "o": "0", "I": "1", "i": "1", "l": "1", "L": "1", "B": "8", "b": "8"}
+        return "".join(mapa.get(ch, ch) for ch in s)
+
+    candidato = None
+    lab = re.search(rotulo, texto, flags=re.IGNORECASE | re.VERBOSE)
+    if lab:
+        # Janela curta após o rótulo (protege contra RENAVAM)
+        start = lab.end()
+        janela = texto[start:start + 160]
+        # Limpa ruídos comuns
+        janela = re.sub(r"\bCAT\b", " ", janela, flags=re.IGNORECASE)
+        janela = re.sub(r"[ \t\r\n]+", " ", janela)
+
+        # Bloco candidato (aceita dígitos e confusões de OCR)
+        m = re.search(r"([0-9OIlB][0-9OIlB \t\-]{6,28}[0-9OIlB])", janela)
+        if m:
+            dig = re.sub(r"\D", "", _fix_ocr(m.group(1)))
+            if len(dig) == 11:
+                candidato = dig
+            elif 8 <= len(dig) <= 20:
+                candidato = dig
+
+    # Anti-RENAVAM: se igual ao RENAVAM, rejeita
+    if candidato and renavam:
+        ren = re.sub(r"\D", "", str(renavam))
+        if len(ren) >= 8 and candidato == ren:
+            return None
+
+    return candidato
+
 
 
 # ===================== UTILITÁRIOS =====================
@@ -1414,10 +1517,16 @@ def extrair_campos_crlv(texto: str):
             dados["Placa"] = placa
 
    # (SE) NÚMERO DE SEGURANÇA DO CRV
+
+
+    # (SE) NÚMERO DE SEGURANÇA DO CRV
     if not dados.get("NumeroSegurancaCRV"):
-        num_seg = extrair_num_seguranca_crv(texto)
+        ren = dados.get("Renavam")
+        num_seg = extrair_num_seguranca_crv(texto, renavam=ren)
         if num_seg:
-            dados["NumeroSegurancaCRV"] = num_seg
+            dados["NumeroSegurancaCRV"] = re.sub(r"\D", "", str(num_seg))
+
+
 
 # CAPACIDADE
     if dados.get("Capacidade") in (None, "", 0):
@@ -1694,10 +1803,28 @@ class ProcessorThread(threading.Thread):
 
             # --- Fim do processamento dos arquivos ---
             # No final do processamento:
+            # --- Fim do processamento dos arquivos ---
+# No final do processamento:
             if resultados:
+                # 0) Mescla registros do MESMO veículo
+                resultados_merged = coalesce_por_veiculo(resultados)
+
+                # Log de auditoria
+                try:
+                    clog(f"[MERGE] Linhas antes: {len(resultados)} | depois: {len(resultados_merged)}")
+                except Exception:
+                    pass
+
+                resultados = resultados_merged
+
                 # 1) Monta o DF “cru” com todos os resultados do lote
                 colunas = CAMPOS_PADRAO + (["_TextoBruto"] if SALVAR_TEXTO_BRUTO_NO_EXCEL else [])
-                df = pd.DataFrame(resultados, columns=colunas).drop_duplicates(subset=["Arquivo"], keep="last")
+                # (Opcional) se quiser ver as fontes no Excel:
+                if any("_MergeFontes" in r for r in resultados):
+                    colunas = list(dict.fromkeys(colunas + ["_MergeFontes"]))
+
+                df = pd.DataFrame(resultados, columns=colunas)
+                # <- NÃO use drop_duplicates por "Arquivo" aqui, pois já consolidamos por veículo.
 
                 # 2) Transforma para o layout exato da planilha (cabeçalho linha 4)
                 from transform_frota import build_frota_df

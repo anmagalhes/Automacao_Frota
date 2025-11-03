@@ -148,6 +148,8 @@ def build_frota_df(
 
     out["ENGINE_SNR"]   = _col(df_in, "Motor")
     out["MWERT3"]        = _col(df_in, "Cor")
+    out["MWERT12"]        = _col(df_in, "NumeroSegurancaCRV")
+
     out["EXPIRY_DATE"]  = _col(df_in, "Data Emissão").apply(to_date_dmy)
 
     # ------------------ 🔽 ADIÇÃO: extras da UI 🔽 ------------------
