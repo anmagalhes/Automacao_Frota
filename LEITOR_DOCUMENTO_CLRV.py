@@ -345,84 +345,80 @@ def _corrigir_confusoes_ocr_num(s: str) -> str:
     return "".join(mapa.get(ch, ch) for ch in s)
 
 
-def extrair_num_seguranca_crv(texto: str) -> str | None:
-    """
-    Extrai o número de segurança do CRV (geralmente 11 dígitos).
-    Procura por contexto com 'segurança' ou 'código' e depois fallback para 11 dígitos.
-    """
+def extrair_num_seguranca_crv(texto: str, renavam: str = None) -> str | None:
     if not texto:
         return None
 
-    # 1) Busca contextual
-    padrao_ctx = r"(?:seguranc[ae]|codigo)\s*(?:do\s*crv)?\s*[:\-]?\s*([0-9OIlB]{8,15})"
-    m = re.search(padrao_ctx, texto, flags=re.IGNORECASE)
-    if m:
-        candidato = m.group(1)
-        # Corrige confusões comuns de OCR
-        candidato = candidato.replace("O", "0").replace("I", "1").replace("l", "1").replace("B", "8")
-        digitos = re.sub(r"\D", "", candidato)
-        if len(digitos) == 11:
-            return digitos
+    t = texto
 
-    # 2) Fallback: primeira sequência de 11 dígitos
-    m2 = re.search(r"\b\d{11}\b", texto)
-    if m2:
-        return m2.group(0)
-
-    return None
-
-
-def extrair_num_seguranca_crv(texto: str, renavam: str = None):
-    """
-    Extrai o 'Número de Segurança do CRV' (11 dígitos).
-    Regras:
-      1) Busca ancorada no rótulo 'NÚMERO DE SEGURANÇA DO CRV' (variações + acentos).
-      2) Tolerante a quebras de linha, 'CAT', ':', '-'.
-      3) Corrige confusões de OCR (O->0, I/l->1, B->8).
-      4) Janela curta após o rótulo (evita capturar RENAVAM ao longe).
-      5) Se o valor for IGUAL ao RENAVAM, rejeita (anti-falso-positivo).
-    """
-    if not texto:
-        return None
-
-    # --- regex do rótulo (tolerante a variações/acentos) ---
-    rotulo = r"""
-        N[ÚU]MERO\W*DE\W*SEGURAN[ÇC]A\W*(?:DO\W*)?CRV
-        [\s:\-]*
-        (?:CAT\b)?
-        [\s\r\n]*
+    ROTULO_CRV = r"""
+        N(?:[\.º°]\s*)?                 # N., Nº, N°
+        [ÚU]MERO\W*DE\W*SEGURAN[ÇC]A    # NUMERO DE SEGURANCA
+        \W*(?:DO\W*)?CRV                # (DO )? CRV
+        [\s:\-]*                        # separadores usuais
+        (?:CAT\b)?                      # 'CAT' pode aparecer colado
+        [\s\r\n]*                       # quebras/espacos
     """
 
-    def _fix_ocr(s: str) -> str:
-        mapa = {"O": "0", "o": "0", "I": "1", "i": "1", "l": "1", "L": "1", "B": "8", "b": "8"}
-        return "".join(mapa.get(ch, ch) for ch in s)
-
+    lab = re.search(ROTULO_CRV, t, flags=re.IGNORECASE | re.VERBOSE)
     candidato = None
-    lab = re.search(rotulo, texto, flags=re.IGNORECASE | re.VERBOSE)
+
     if lab:
-        # Janela curta após o rótulo (protege contra RENAVAM)
         start = lab.end()
-        janela = texto[start:start + 160]
-        # Limpa ruídos comuns
-        janela = re.sub(r"\bCAT\b", " ", janela, flags=re.IGNORECASE)
-        janela = re.sub(r"[ \t\r\n]+", " ", janela)
+        janela = t[start:start + 200]
 
-        # Bloco candidato (aceita dígitos e confusões de OCR)
-        m = re.search(r"([0-9OIlB][0-9OIlB \t\-]{6,28}[0-9OIlB])", janela)
-        if m:
-            dig = re.sub(r"\D", "", _fix_ocr(m.group(1)))
-            if len(dig) == 11:
-                candidato = dig
-            elif 8 <= len(dig) <= 20:
-                candidato = dig
+        # Reduz ruído antes de procurar os 11 dígitos
+        janela_limp = re.sub(r"\bCAT\b", " ", janela, flags=re.IGNORECASE)
+        # normaliza espaços/quebras
+        janela_limp = re.sub(r"[ \t\r\n]+", " ", janela_limp)
 
-    # Anti-RENAVAM: se igual ao RENAVAM, rejeita
+        # Corrige OCR e busca EXATAMENTE 11 dígitos com boundaries
+        win = _fix_ocr_digits(janela_limp)
+        m11 = re.search(r'(?<!\d)\d{11}(?!\d)', win)
+        if m11:
+            candidato = m11.group(0)
+
+    if not candidato:
+        # Fallback onde o rótulo pode estar “quebrado”
+        m2 = re.search(
+            r"N[ÚU]MERO\s*DE\s*SEGURAN[ÇC]A.*?CRV([^0-9]+)(\d{11})",
+            t, flags=re.IGNORECASE | re.DOTALL
+        )
+        if m2:
+            candidato = m2.group(2)
+
+    # Anti-RENAVAM
     if candidato and renavam:
         ren = re.sub(r"\D", "", str(renavam))
         if len(ren) >= 8 and candidato == ren:
             return None
 
     return candidato
+
+def extrair_num_seguranca_crv_pag2(texto: str) -> str | None:
+    """
+    Extrai o 'Número de Segurança do CRV' quando ele aparece na PÁGINA 2 do CRLV-e
+    (bloco oficial da SENATRAN). Corrige OCR e captura EXATAMENTE 11 dígitos.
+    """
+    if not texto:
+        return None
+
+    mrot = re.search(r"N[ÚU]MERO\s*DE\s*SEGURAN[ÇC]A\s*DO\s*CRV", texto, flags=re.IGNORECASE)
+    if not mrot:
+        return None
+
+    # Janela curta após o rótulo (evita pegar o “10 Benefícios...”)
+    janela = texto[mrot.end(): mrot.end() + 160]
+
+    # Correção leve de OCR
+    mapa = {"O":"0","o":"0","I":"1","i":"1","l":"1","L":"1","B":"8","b":"8"}
+    win = "".join(mapa.get(ch, ch) for ch in janela)
+
+    # 11 dígitos contíguos
+    m11 = re.search(r'(?<!\d)\d{11}(?!\d)', win)
+    if m11:
+        return m11.group(0)
+    return None
 
 
 
@@ -1516,15 +1512,30 @@ def extrair_campos_crlv(texto: str):
         if placa:
             dados["Placa"] = placa
 
-   # (SE) NÚMERO DE SEGURANÇA DO CRV
-
-
     # (SE) NÚMERO DE SEGURANÇA DO CRV
     if not dados.get("NumeroSegurancaCRV"):
         ren = dados.get("Renavam")
+
+        # 1) Tenta rótulo (qualquer página)
         num_seg = extrair_num_seguranca_crv(texto, renavam=ren)
+
+        # 2) Se não achou, tenta PÁGINA 2 (SENATRAN)
+        if not num_seg:
+            num_seg = extrair_num_seguranca_crv_pag2(texto)
+
+        # 3) Sanitização dura: extrai exatamente 11 dígitos com boundaries
         if num_seg:
-            dados["NumeroSegurancaCRV"] = re.sub(r"\D", "", str(num_seg))
+            m = re.search(r'(?<!\d)\d{11}(?!\d)', str(num_seg))
+            num_seg = m.group(0) if m else None
+
+        # 4) Anti-falso-positivo: igual ao RENAVAM -> descarta
+        if num_seg and ren:
+            if re.sub(r"\D", "", str(ren)) == re.sub(r"\D", "", str(num_seg)):
+                num_seg = None
+
+        # 5) Atribui somente se for EXATAMENTE 11 dígitos
+        if num_seg and len(num_seg) == 11:
+            dados["NumeroSegurancaCRV"] = num_seg
 
 
 
