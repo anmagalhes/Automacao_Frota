@@ -99,7 +99,6 @@ def _num_crv_window(txt: str) -> str | None:
             return mnum.group(1)
     return None
 
-
 def _header_folheto_flat(txt: str) -> dict:
     """
     Cabeçalho do folheto em linha:
@@ -120,6 +119,8 @@ def _header_folheto_flat(txt: str) -> dict:
         "Ano Fabricação": (m.group(3) or "").strip(),
         "Ano Modelo":     (m.group(4) or "").strip(),
     }
+
+
 
 def coalesce_por_veiculo(rows):
     """
@@ -695,44 +696,89 @@ def normalizar_placa(placa: str) -> str:
     # senão retorna p limpo mesmo
     return p
 
-def extrair_num_capacidade(s: str):
+import re
+
+def extrair_num_capacidade(s: str, renavam: str = None) -> str | None:
     """
-    Extrai 'número + unidade opcional' de uma string de capacidade.
+    Extrai 'número + unidade opcional' para CAPACIDADE.
     Aceita: 0.15, 0,15, 500, 500 KG, 10 L, 02P (pessoas).
-    Rejeita linhas de POT/CIL (CV, POT, CIL, 'x/y' sem KG) e códigos longos (motor).
-    Retorna string padronizada (número com vírgula + unidade opcional) ou None.
+    Rejeita:
+      - Linhas de POT/CIL ou 'CV' (ex.: 114CV/1598, 0CV/162);
+      - Padrões que parecem código/motor (A-Z0-9- longo);
+      - Números iguais ao RENAVAM (considerando .0), 11 dígitos (perfil Nº Segurança),
+        e números muito longos sem unidade plausível.
+    Retorna número normalizado com vírgula + unidade opcional, ou None.
     """
     if not s:
         return None
+
     t = s.strip().upper()
 
-    # Rejeitar linhas típicas de Pot/Cil ou CV
+    # 1) Rejeitar linhas típicas de Potência/Cilindrada ou CV
     if re.search(r"\b(CV|POT|CIL)\b", t):
         return None
-    # Rejeitar "x/y" que não seja kg/pessoas (ex.: 0CV/162)
+
+    # 2) Rejeitar "x/y" que não seja kg/pessoas (ex.: 0CV/162)
     if "/" in t and "KG" not in t and not re.search(r"\bP\b", t):
         return None
-    # Rejeitar coisa que parece motor/código longo
+
+    # 3) Rejeitar coisa que parece motor/código longo (tudo colado, 8+ chars)
     if re.fullmatch(r"[A-Z0-9\-]{8,}", t):
         return None
 
-    # PESSOAS: 01P, 1P, 10P...
+    # 4) PESSOAS: 01P, 1P, 10P...
     m = re.search(r"\b0*([0-9]+)\s*P\b", t)
     if m:
         return f"{int(m.group(1))}P"
 
-    # COM UNIDADE: kg, t/ton, l
+    # 5) COM UNIDADE: KG, T/TON, L
     m = re.search(r"(\d+(?:[.,]\d+)?)[ ]*(KG|T|TON|L)\b", t)
     if m:
         num = m.group(1).replace(".", ",")  # padroniza vírgula
         und = m.group(2)
+        # Anti-RENAVAM também aqui, caso a linha venha "01281117517 KG" (raro, mas por segurança)
+        dig = re.sub(r"\D", "", m.group(1))
+        if renavam:
+            ren = re.sub(r"\D", "", str(renavam))
+            if dig.lstrip("0") == ren.lstrip("0"):
+                return None
+        if len(dig) == 11:
+            return None
         return f"{num} {und}".strip()
 
-    # SOMENTE NÚMERO (int/decimal)
+    # 6) SOMENTE NÚMERO (int/decimal)
     m = re.search(r"\b\d+(?:[.,]\d+)?\b", t)
     if m:
-        num = m.group(0).replace(".", ",")
-        return num
+        num_txt = m.group(0).strip()
+
+        # Se vier como X.0 / X,0 -> trate como inteiro textual
+        try:
+            val = float(num_txt.replace(",", "."))
+            if val.is_integer():
+                num_canon = str(int(val))
+            else:
+                num_canon = num_txt.replace(".", ",")
+        except Exception:
+            num_canon = num_txt.replace(".", ",")
+
+        # Anti-RENAVAM / anti “número longo sem unidade”
+        dig = re.sub(r"\D", "", num_canon)
+
+        # Igual ao RENAVAM (desconsiderando zeros à esquerda)
+        if renavam:
+            ren = re.sub(r"\D", "", str(renavam))
+            if dig and dig.lstrip("0") == ren.lstrip("0"):
+                return None
+
+        # 11 dígitos = perfil de "Número de Segurança do CRV" (não é capacidade)
+        if len(dig) == 11:
+            return None
+
+        # Números muito longos sem unidade plausível (≥ 8 dígitos)
+        if len(dig) >= 8 and not re.search(r"\b(KG|T|TON|L|P)\b", t):
+            return None
+
+        return num_canon
 
     return None
 
@@ -742,6 +788,7 @@ def parse_marca_modelo(modelo_raw: str):
     Regras:
       - Se houver '/', usa a PRIMEIRA como separador: 'HONDA/CG 160 CARGO' -> ('HONDA', 'CG 160 CARGO')
       - Remove asteriscos, espaços duplicados e barras adicionais no começo/fim.
+      - Remove prefixos curtos como 'I/' (ex.: 'I/NISSAN VERSA...' -> 'NISSAN VERSA...')
       - Se não houver '/', tenta inferir: se a primeira 'palavra' é 'marca' conhecida, usa como Fabricante.
       - Se não conseguir separar, devolve (None, modelo normalizado).
     """
@@ -749,9 +796,20 @@ def parse_marca_modelo(modelo_raw: str):
         return (None, None)
 
     s = (modelo_raw or "").strip()
+
+    # --- Normalizações iniciais ---
     # remove lixos comuns
     s = s.strip("* ").replace("  ", " ").strip()
     s = re.sub(r"\s{2,}", " ", s)
+
+    # remove prefixo curto no formato 'X/' ou 'XX/' no início (ex.: I/, E/, IMP/)
+    # - comum em CRLV ("I/NISSAN ..."): queremos descartar esses indicativos
+    s = re.sub(r"^[A-Z]{1,3}\s*/\s*", "", s, flags=re.IGNORECASE)
+
+    # colapsa barras consecutivas e espaços ao redor da barra
+    s = re.sub(r"\s*/\s*", "/", s)
+    s = re.sub(r"/{2,}", "/", s)
+    s = s.strip(" /")
 
     # lista básica de marcas (pode ampliar conforme necessidade)
     marcas = {
@@ -762,24 +820,29 @@ def parse_marca_modelo(modelo_raw: str):
         "TOYOTA","TRIUMPH","VOLKSWAGEN","VW","VOLVO","YAMAHA"
     }
 
+    # --- Caso haja '/', separa em marca/modelo na primeira barra ---
     if "/" in s:
         left, right = s.split("/", 1)
         marca = left.strip(" /-").upper()
         modelo = right.strip(" /-")
-        # se a marca vier repetida no início do modelo, remove
+
+        # se a marca vier repetida no início do modelo, remove (ex.: NISSAN NISSAN VERSA ...)
         if modelo.upper().startswith(marca + " "):
             modelo = modelo[len(marca):].lstrip()
+
         return (marca or None, modelo or None)
 
-    # sem '/', tenta inferir: pega primeira 'palavra' como marca se bater na lista
+    # --- Sem '/', tenta inferir pela primeira palavra (ou duas) ---
     tokens = s.split()
     if tokens:
         t0 = tokens[0].upper()
+
         # marcas compostas (LAND ROVER, MERCEDES BENZ...)
         if len(tokens) >= 2 and f"{t0} {tokens[1].upper()}" in marcas:
             marca = f"{t0} {tokens[1].upper()}"
             modelo = " ".join(tokens[2:]).strip() or None
             return (marca, modelo)
+
         # marca simples
         if t0 in marcas:
             marca = t0
@@ -1358,8 +1421,46 @@ def extrair_campos_crlv(texto: str):
     m = re.search(r"(?:C[ÓO]DIGO\s*)?RENAVAM[:\s]*([\d\.]{9,14})", t_norm, re.IGNORECASE);  dados["Renavam"] = limpar_valor(m.group(1)) if m else None
     crv_win = _num_crv_window(t_norm)
     dados["Número do CRV"] = crv_win if crv_win else None
-    m = re.search(r"ANO\s*(?:DE\s*)?FABRICA[ÇC][ÃA]O\s*[:\s]*([12]\d{3})", t_norm, re.IGNORECASE);  dados["Ano Fabricação"] = limpar_valor(m.group(1)) if m else None
-    m = re.search(r"ANO\s*MODELO\s*[:\s]*([12]\d{3})", t_norm, re.IGNORECASE);                     dados["Ano Modelo"] = limpar_valor(m.group(1)) if m else None
+
+    # (A) PRIORIDADE 1 — Cabeçalho do folheto (pega os DOIS anos)
+    hdr = _header_folheto_flat(texto)   # use 'texto' BRUTO (com \n), não apenas t_norm
+    if hdr:
+        if hdr.get("Ano Fabricação"):
+            dados["Ano Fabricação"] = hdr["Ano Fabricação"]
+        if hdr.get("Ano Modelo"):
+            dados["Ano Modelo"] = hdr["Ano Modelo"]
+
+    # (B) PRIORIDADE 2 — Bloco do CRLV‑e (rótulos separados)
+    m_crlve = re.search(
+        r"CERTIFICADO\s+DE\s+REGISTRO\s+E\s+LICENCIAMENTO\s+DE\s+VE[ÍI]CULO\s*-\s*DIGITAL",
+        texto, re.IGNORECASE
+    )
+    if m_crlve:
+        bloco = texto[m_crlve.start():]
+        if not dados.get("Ano Fabricação"):
+            mf = re.search(r"ANO\s*(?:DE\s*)?FABRICA[ÇC][ÃA]O\s*[:\s]*([12]\d{3})", bloco, re.IGNORECASE)
+            if mf:
+                dados["Ano Fabricação"] = mf.group(1)
+        if not dados.get("Ano Modelo"):
+            mm = re.search(r"ANO\s*MODELO\s*[:\s]*([12]\d{3})", bloco, re.IGNORECASE)
+            if mm:
+                dados["Ano Modelo"] = mm.group(1)
+
+    # (C) PRIORIDADE 3 — Regex unitárias no t_norm (só se ainda faltar)
+    if not dados.get("Ano Fabricação"):
+        m = re.search(r"ANO\s*(?:DE\s*)?FABRICA[ÇC][ÃA]O\s*[:\s]*([12]\d{3})", t_norm, re.IGNORECASE)
+        if m:
+            dados["Ano Fabricação"] = m.group(1)
+
+    if not dados.get("Ano Modelo"):
+        m = re.search(r"ANO\s*MODELO\s*[:\s]*([12]\d{3})", t_norm, re.IGNORECASE)
+        if m:
+            dados["Ano Modelo"] = m.group(1)
+
+    # (D) Derivado — TIPO_ANO_VEICULO (Modelo/Fabricação)
+    if dados.get("Ano Fabricação") and dados.get("Ano Modelo"):
+        dados["TIPO_ANO_VEICULO"] = f"{dados['Ano Modelo']}/{dados['Ano Fabricação']}"
+
     m = re.search(r"\bCATEGORIA\b\s*[:\s]*([A-ZÀ-Ü ]+)", t_norm);                                   dados["Categoria"] = limpar_valor(m.group(1)) if m else None
     m = re.search(r"ESP[ÉE]CIE\s*/\s*TIPO\s*[:\s]*([A-ZÀ-Ü ]+)", t_norm);                           dados["Espécie / Tipo"] = limpar_valor(m.group(1)) if m else None
 

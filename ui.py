@@ -59,53 +59,87 @@ from LEITOR_DOCUMENTO_CLRV import (
     OCR_SPACE_APIKEY_DEFAULT,
     ProcessorThread,
 )
-
 # ---------- Tema escuro ----------
 def setup_dark_theme(root: tk.Tk):
-    root.configure(bg="#0b1220")
+    # Fundo da janela
+    root.configure(bg="#0B0F1A")
+
     style = ttk.Style(root)
     try:
-        style.theme_use("clam")
+        style.theme_use("clam")  # 'clam' respeita fieldbackground/bordercolor melhor
     except tk.TclError:
         pass
 
+    # Paleta Solar Coca-Cola (Dark)
     palette = {
-        "bg": "#0b1220",
-        "panel": "#0f172a",
-        "panel2": "#111827",
-        "text": "#e5e7eb",
-        "muted": "#9ca3af",
-        "primary": "#10b981",        # VERDE corporativo (CTA)
-        "primaryActive": "#065f46",  # verde escuro (hover/press)
-        "accent": "#22d3ee",         # ciano (destaques)
-        "border": "#1f2937",
+        "bg": "#0B0F1A",
+        "panel": "#111827",
+        "panel2": "#1F2937",
+        "text": "#F9FAFB",
+        "muted": "#9CA3AF",
+        "primary": "#E41E2B",        # Coca-Cola Red (CTA principal)
+        "primaryActive": "#B71822",  # hover/pressed do CTA
+        "accent": "#FDB913",         # Solar Yellow (destaques/foco)
+        "border": "#374151",         # bordas discretas
+        "focusField": "#0E1B2B",     # fundo do entry em foco (azul-escuro)
+        "disabledPanel": "#0D1421"   # leve variação para disabled
     }
 
+    # --------------- BASE ---------------
     # Frames / Cards
     style.configure("TFrame", background=palette["bg"])
     style.configure("Card.TFrame", background=palette["panel"], borderwidth=1, relief=tk.SOLID)
 
-    # Textos
-    style.configure("Header.TLabel", background=palette["bg"], foreground=palette["text"],
-                    font=("Segoe UI", 14, "bold"))
+    # Labels
     style.configure("TLabel", background=palette["panel"], foreground=palette["text"],
                     font=("Segoe UI", 10))
+    style.configure("Header.TLabel", background=palette["bg"], foreground=palette["text"],
+                    font=("Segoe UI", 14, "bold"))
     style.configure("Muted.TLabel", background=palette["panel"], foreground=palette["muted"],
                     font=("Segoe UI", 9))
 
-    # Entradas
-    style.configure("TEntry",
-                    fieldbackground=palette["panel2"],
-                    foreground=palette["text"],
-                    insertcolor=palette["text"])
-    style.map("TEntry",
-              fieldbackground=[("readonly", palette["panel2"]),
-                               ("focus", "#0e1b2b")])
+    # ---------------- ENTRIES ----------------
+    # Base
+    style.configure(
+        "TEntry",
+        foreground=palette["text"],
+        fieldbackground=palette["panel2"],
+        background=palette["panel"],          # alguns temas usam o background do widget
+        insertcolor=palette["text"],
+        bordercolor=palette["border"],
+        lightcolor=palette["border"],
+        darkcolor=palette["border"],
+        padding=6
+    )
+    # Estados
+    style.map(
+        "TEntry",
+        fieldbackground=[
+            ("disabled", palette["panel2"]),
+            ("readonly", palette["panel2"]),
+            ("focus",    palette["focusField"]),
+            ("!focus",   palette["panel2"]),
+        ],
+        foreground=[
+            ("disabled", palette["muted"]),
+            ("readonly", palette["text"]),
+            ("focus",    palette["text"]),
+        ],
+        bordercolor=[
+            ("invalid",  palette["primary"]),  # erro: vermelho Coca-Cola
+            ("focus",    palette["accent"]),   # foco: amarelo Solar
+            ("!focus",   palette["border"]),
+        ],
+        insertcolor=[
+            ("focus", palette["text"]),
+        ]
+    )
 
-    # Botões CTA/Ghost
+    # ---------------- BUTTONS ----------------
     base_font = ("Segoe UI", 10, "semibold")
     style.configure("TButton", font=base_font)
 
+    # CTA (Accent.TButton) – vermelho principal
     style.configure(
         "Accent.TButton",
         foreground=palette["text"],
@@ -113,48 +147,69 @@ def setup_dark_theme(root: tk.Tk):
         borderwidth=0,
         padding=(14, 8),
         font=("Segoe UI Semibold", 11),
+        focuscolor=palette["accent"]
     )
     style.map(
         "Accent.TButton",
-        foreground=[("disabled", palette["muted"]), ("!disabled", palette["text"])],
-        background=[
-            ("disabled", "#1a2433"),
-            ("pressed", palette["primaryActive"]),
-            ("active", "#0f9e72"),
-            ("!disabled", palette["primary"]),
+        foreground=[
+            ("disabled", palette["muted"]),
+            ("!disabled", palette["text"]),
         ],
+        background=[
+            ("disabled", palette["disabledPanel"]),
+            ("pressed", palette["primaryActive"]),
+            ("active",  palette["primaryActive"]),
+            ("!disabled", palette["primary"]),
+        ]
     )
 
+    # Ghost button – sutil, usa panel2
     style.configure(
         "Ghost.TButton",
         foreground=palette["text"],
         background=palette["panel2"],
         borderwidth=1,
         padding=(8, 5),
-        font=("Segoe UI", 10),
+        font=("Segoe UI", 10)
     )
     style.map(
         "Ghost.TButton",
-        foreground=[("disabled", palette["muted"]), ("!disabled", palette["text"])],
+        foreground=[
+            ("disabled", palette["muted"]),
+            ("!disabled", palette["text"]),
+        ],
         background=[
             ("disabled", palette["panel2"]),
-            ("pressed", "#0c141f"),
-            ("active", "#0c141f"),
+            ("pressed",  palette["panel"]),
+            ("active",   palette["panel"]),
             ("!disabled", palette["panel2"]),
         ],
-        bordercolor=[("active", palette["accent"]), ("!disabled", palette["border"])],
+        bordercolor=[
+            ("invalid", palette["primary"]),
+            ("active",  palette["accent"]),
+            ("!disabled", palette["border"]),
+        ]
     )
 
+    # ---------------- CHECKBUTTON / PROGRESSBAR ----------------
     style.configure("TCheckbutton", background=palette["bg"], foreground=palette["text"])
 
-    style.configure("TProgressbar",
-                    background=palette["accent"],
-                    troughcolor=palette["panel2"],
-                    bordercolor=palette["border"])
+    # Progressbar
+    style.configure(
+        "TProgressbar",
+        background=palette["accent"],   # barra (valor)
+        troughcolor=palette["panel2"],  # trilho
+        bordercolor=palette["border"]
+    )
 
+    # Cursor padrão
     root.configure(cursor="arrow")
-    return palette
 
+    # Garante o fundo dos containers que herdarem TFrame/TLabel
+    style.configure("TFrame", background=palette["bg"])
+    style.configure("TLabel", background=palette["panel"], foreground=palette["text"])
+
+    return palette
 class UI:
     def __init__(self):
         self.root = tk.Tk()
