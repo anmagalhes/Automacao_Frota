@@ -2162,7 +2162,6 @@ class ProcessorThread(threading.Thread):
                     colunas = list(dict.fromkeys(colunas + ["_MergeFontes"]))
 
                 df = pd.DataFrame(resultados, columns=colunas)
-                # <- NÃO use drop_duplicates por "Arquivo" aqui, pois já consolidamos por veículo.
 
                 # 2) Transforma para o layout exato da planilha (cabeçalho linha 4)
                 from transform_frota import build_frota_df
@@ -2199,13 +2198,6 @@ class ProcessorThread(threading.Thread):
                 out_path = self._ensure_xlsx(out_path)
                 out_path.parent.mkdir(parents=True, exist_ok=True)
 
-                # (Opcional) Se você quer garantir que um TEMPLATE seja usado quando o arquivo ainda não existir:
-                # from utils_paths import resource_path
-                # import shutil
-                # template_path = resource_path("templates", "ModeloFrota.xlsx")
-                # if not out_path.exists():
-                #     shutil.copy(template_path, out_path)
-
                 # 4) Atualiza o Excel EXISTENTE, apenas a aba desejada, preservando layout
                 from excel_writer import write_df_to_existing_template
                 write_df_to_existing_template(
@@ -2217,16 +2209,6 @@ class ProcessorThread(threading.Thread):
                     column_map=column_map,  # df_frota já tem os nomes iguais aos cabeçalhos da planilha
                     strict=False,
                 )
-
-                # 5) (Opcional) Exporta um CSV com as falhas detectadas no lote
-                if GERAR_CSV_FALHAS and falhas:
-                    try:
-                        pd.DataFrame(falhas).to_csv(
-                            Path(self.pasta) / f"crlv_falhas_{time.strftime('%Y%m%d-%H%M%S')}.csv",
-                            index=False, sep=";", encoding="utf-8"
-                        )
-                    except Exception as e:
-                        clog(f"[⚠] Falha ao salvar CSV de falhas: {e}")
 
                 self.ui.msg(f"✔ Excel atualizado: {out_path}")
                 clog(f"[💾] Excel atualizado (uma única escrita, preservando layout): {out_path}")
@@ -2243,11 +2225,6 @@ class ProcessorThread(threading.Thread):
                 except Exception:
                     pass
             self.ui.done()
-
-# ===================== MAIN =====================
-#if __name__ == "__main__":
-#    ui = UI()
-#    ui.run()
 
 # pyinstaller --noconfirm --onefile --windowed --clean --name LEITOR_DOCUMENTO_CLRV --hidden-import=pdfplumber --hidden-import=extract_msg --hidden-import=openpyxl.styles.numbers "ui.py"
 
